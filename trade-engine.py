@@ -8,6 +8,23 @@ import sys
 import os
 from deriv_api import DerivAPI
 from dotenv import load_dotenv
+from flask import Flask
+import threading
+
+# Create a tiny web server to satisfy Render's port scan
+app = Flask(__name__)
+
+@app.route('/')
+def health_check():
+    return "Bot is alive!", 200
+
+def run_web():
+    # Render provides the PORT environment variable automatically
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host='0.0.0.0', port=port)
+
+# Start this in a separate thread before your bot starts
+threading.Thread(target=run_web, daemon=True).start()
 
 # Force logs to show up immediately in Render/Cloud consoles
 os.environ['PYTHONUNBUFFERED'] = '1'
