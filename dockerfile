@@ -11,7 +11,10 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # 5. Copy the rest of your code (engine.py, trainer.py, .env, etc.)
-COPY . .
+COPY engine.py .
+COPY trainer.py .
+COPY .env .
+COPY trading_model.joblib .
 
 # 6. Start the engine by default
 CMD ["python", "engine.py"]
