@@ -132,19 +132,19 @@ class ProductionEngine:
         # --- NEW REFINED LOGIC ---
 
         # 1. LIVE TRADING (The Sniper) - No changes needed here, it's already safe.
-        if self.last_prob > 0.98 and self.last_trend_gap > 0.02 and self.last_rsi < 60:
+        if self.last_prob > 0.98 and self.last_trend_gap > 0.02 and self.last_rsi < 55:
             await self.place_trade(api, "CALL")
-        elif self.last_prob < 0.02 and self.last_trend_gap < -0.02 and self.last_rsi > 40:
+        elif self.last_prob < 0.02 and self.last_trend_gap < -0.02 and self.last_rsi > 45:
             await self.place_trade(api, "PUT")
 
         # 2. SHADOW MONITORING (The Learning Zone) - TIGHTENED
         else:
             # Shadow CALL: Must have POSITIVE gap and RSI not too high
-            if 0.90 < self.last_prob < 0.98 and self.last_trend_gap > 0.005 and self.last_rsi < 55:
+            if 0.90 < self.last_prob < 0.98 and self.last_trend_gap > 0.005 and self.last_rsi < 60:
                 asyncio.create_task(self.shadow_monitor(price, "CALL"))
 
             # Shadow PUT: Must have NEGATIVE gap and RSI not too low
-            elif 0.02 < self.last_prob < 0.10 and self.last_trend_gap < -0.005 and self.last_rsi > 45:
+            elif 0.02 < self.last_prob < 0.10 and self.last_trend_gap < -0.005 and self.last_rsi > 40:
                 asyncio.create_task(self.shadow_monitor(price, "PUT"))
 
     async def shadow_monitor(self, entry_price, direction):
@@ -163,8 +163,9 @@ class ProductionEngine:
 
         # Post-Mortem Report for Shadow Trades
         status = "✅ SHADOW WIN" if win else "❌ SHADOW LOSS"
+        icon = "📈" if direction == "CALL" else "📉"
         msg = (
-            f"{status} ({direction})\n"
+            f"{status} ({icon})\n"
             f"--- ---\n"
             f"🧠 Prob: `{entry_prob:.2%}`\n"
             f"📊 Gap: `{entry_gap:.4f}%`\n"
