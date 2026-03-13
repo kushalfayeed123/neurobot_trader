@@ -123,7 +123,7 @@ class ProductionEngine:
         if not self.current_contract:
             if self.last_prob > 0.98 and self.last_trend_gap > 0.02 and self.last_rsi < 60:
                 await self.place_trade(api, "CALL")
-            elif self.last_prob < 0.02 and self.last_trend_gap < -0.02 and self.last_rsi > 40:
+            elif self.last_prob < 0.02 and self.last_trend_gap < -0.02 and self.last_rsi > 50:
                 await self.place_trade(api, "PUT")
             elif 0.85 < self.last_prob < 0.98 or 0.02 < self.last_prob < 0.15:
                 asyncio.create_task(self.shadow_monitor(price, "CALL" if self.last_prob > 0.5 else "PUT"))
