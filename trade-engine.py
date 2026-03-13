@@ -129,11 +129,26 @@ class ProductionEngine:
                 asyncio.create_task(self.shadow_monitor(price, "CALL" if self.last_prob > 0.5 else "PUT"))
 
     async def shadow_monitor(self, entry_price, direction):
+        entry_rsi = self.last_rsi
+        entry_gap = self.last_trend_gap
+        entry_prob = self.last_prob
+        
         await asyncio.sleep(12)
         exit_price = self.buffer['price'].iloc[-1]
         win = (exit_price > entry_price) if direction == "CALL" else (exit_price < entry_price)
         if win: self.shadow_wins += 1
         else: self.shadow_losses += 1
+        
+        # Post-Mortem Report for Shadow Trades
+        status = "✅ SHADOW WIN" if win else "❌ SHADOW LOSS"
+        msg = (
+            f"{status} ({direction})\n"
+            f"--- ---\n"
+            f"🧠 Prob: `{entry_prob:.2%}`\n"
+            f"📊 Gap: `{entry_gap:.4f}%`\n"
+            f"📉 RSI: `{entry_rsi:.1f}`"
+        )
+        await self.send_telegram_msg(msg)
 
     async def place_trade(self, api, direction):
         if self.current_contract or self.session_profit <= -1.50: return
