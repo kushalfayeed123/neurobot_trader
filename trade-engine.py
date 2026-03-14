@@ -128,28 +128,33 @@ class ProductionEngine:
 
         self.last_prob = self.model.predict_proba(feat)[0][1]
 
-        # Sniper Logic
-        # --- NEW REFINED LOGIC ---
+       # --- DYNAMIC SNIPER EXECUTION ---
+        if not self.current_contract:
+            
+            # --- CALL LOGIC ---
+            # Tier 1: The "Absolute" Sniper (High Prob, Moderate Gap)
+            if self.last_prob > 0.99 and self.last_trend_gap > 0.015 and self.last_rsi < 55:
+                await self.place_trade(api, "CALL")
+            
+            # Tier 2: The "Trend-Backer" (Moderate Prob, High Gap)
+            elif self.last_prob > 0.94 and self.last_trend_gap > 0.035 and self.last_rsi < 55:
+                await self.place_trade(api, "CALL")
+                
+            # --- PUT LOGIC ---
+            # Tier 1: The "Absolute" Sniper
+            elif self.last_prob < 0.01 and self.last_trend_gap < -0.015 and self.last_rsi > 45:
+                await self.place_trade(api, "PUT")
+                
+            # Tier 2: The "Trend-Backer"
+            elif self.last_prob < 0.06 and self.last_trend_gap < -0.035 and self.last_rsi > 45:
+                await self.place_trade(api, "PUT")
 
-        # 1. LIVE TRADING (The Sniper) - No changes needed here, it's already safe.
-        if self.last_prob > 0.98 and self.last_trend_gap > 0.02 and self.last_rsi < 55:
-            await self.place_trade(api, "CALL")
-        elif self.last_prob < 0.02 and self.last_trend_gap < -0.02 and self.last_rsi > 45:
-            await self.place_trade(api, "PUT")
-
-        # 2. SHADOW MONITORING (The Learning Zone) - TIGHTENED
-        else:
-            # TEMPORARY WIDE NET (Verification Only)
-            if 0.65 < self.last_prob < 0.98 or 0.02 < self.last_prob < 0.35:
-                if abs(self.last_trend_gap) > 0.001: # Very low gap requirement
-                    asyncio.create_task(self.shadow_monitor(price, "CALL" if self.last_prob > 0.5 else "PUT"))
-            # # Shadow CALL: Must have POSITIVE gap and RSI not too high
-            # if 0.90 < self.last_prob < 0.98 and self.last_trend_gap > 0.005 and self.last_rsi < 60:
-            #     asyncio.create_task(self.shadow_monitor(price, "CALL"))
-
-            # # Shadow PUT: Must have NEGATIVE gap and RSI not too low
-            # elif 0.02 < self.last_prob < 0.10 and self.last_trend_gap < -0.005 and self.last_rsi > 40:
-            #     asyncio.create_task(self.shadow_monitor(price, "PUT"))
+            # --- SHADOW MONITOR (For everything else in the "Zone") ---
+            else:
+                if (0.85 < self.last_prob < 0.98) or (0.02 < self.last_prob < 0.15):
+                    # Only shadow trade if there is SOME trend alignment
+                    if abs(self.last_trend_gap) > 0.005:
+                        asyncio.create_task(self.shadow_monitor(price, "CALL" if self.last_prob > 0.5 else "PUT"))
 
     async def shadow_monitor(self, entry_price, direction):
         entry_rsi = self.last_rsi
