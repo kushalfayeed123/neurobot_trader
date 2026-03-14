@@ -55,6 +55,7 @@ class ProductionEngine:
         self.shadow_wins = 0
         self.shadow_losses = 0
         self.last_update_id = 0
+        self.cooldown_until = 0  # Timestamp for the cooldown
 
     async def start(self):
         while True:
@@ -98,6 +99,10 @@ class ProductionEngine:
             return
         self.last_tick_time = time.time()
 
+        # 1. Check Cooldown
+        if time.time() < self.cooldown_until:
+            return
+
         price = msg['tick']['quote']
         self.buffer = pd.concat([self.buffer, pd.DataFrame(
             [{'price': price}])], ignore_index=True).tail(60)
@@ -117,7 +122,7 @@ class ProductionEngine:
         rs = gain / loss if loss != 0 else 0
         self.last_rsi = 100 - (100 / (1 + rs))
 
-        # AI
+        # AI Features
         feat = pd.DataFrame([{
             'returns': prices.pct_change().iloc[-1],
             'volatility': prices.pct_change().rolling(14).std().iloc[-1],
@@ -128,33 +133,31 @@ class ProductionEngine:
 
         self.last_prob = self.model.predict_proba(feat)[0][1]
 
-       # --- DYNAMIC SNIPER EXECUTION ---
+        # --- REFINED EXECUTION WITH RSI WALLS & COOLDOWN ---
         if not self.current_contract:
-            
-            # --- CALL LOGIC ---
-            # Tier 1: The "Absolute" Sniper (High Prob, Moderate Gap)
-            if self.last_prob > 0.99 and self.last_trend_gap > 0.015 and self.last_rsi < 55:
-                await self.place_trade(api, "CALL")
-            
-            # Tier 2: The "Trend-Backer" (Moderate Prob, High Gap)
-            elif self.last_prob > 0.94 and self.last_trend_gap > 0.035 and self.last_rsi < 55:
-                await self.place_trade(api, "CALL")
-                
-            # --- PUT LOGIC ---
-            # Tier 1: The "Absolute" Sniper
-            elif self.last_prob < 0.01 and self.last_trend_gap < -0.015 and self.last_rsi > 45:
-                await self.place_trade(api, "PUT")
-                
-            # Tier 2: The "Trend-Backer"
-            elif self.last_prob < 0.06 and self.last_trend_gap < -0.035 and self.last_rsi > 45:
-                await self.place_trade(api, "PUT")
 
-            # --- SHADOW MONITOR (For everything else in the "Zone") ---
+            # CALL LOGIC (Must be within RSI 20-50 to avoid falling knives/overbought)
+            if 20 < self.last_rsi < 50:
+                if self.last_prob > 0.99 and self.last_trend_gap > 0.015:
+                    await self.place_trade(api, "CALL")
+                elif self.last_prob > 0.94 and self.last_trend_gap > 0.035:
+                    await self.place_trade(api, "CALL")
+
+            # PUT LOGIC (Must be within RSI 50-80 to avoid vertical rockets/oversold)
+            elif 50 < self.last_rsi < 80:
+                if self.last_prob < 0.01 and self.last_trend_gap < -0.015:
+                    await self.place_trade(api, "PUT")
+                elif self.last_prob < 0.06 and self.last_trend_gap < -0.035:
+                    await self.place_trade(api, "PUT")
+
+            # SHADOW MONITOR (Stricter requirements)
             else:
-                if (0.85 < self.last_prob < 0.98) or (0.02 < self.last_prob < 0.15):
-                    # Only shadow trade if there is SOME trend alignment
-                    if abs(self.last_trend_gap) > 0.005:
-                        asyncio.create_task(self.shadow_monitor(price, "CALL" if self.last_prob > 0.5 else "PUT"))
+                if (0.92 < self.last_prob < 0.98) or (0.02 < self.last_prob < 0.08):
+                    # Only shadow trade if Trend and AI are in perfect agreement
+                    if (self.last_prob > 0.5 and self.last_trend_gap > 0.01) or \
+                       (self.last_prob < 0.5 and self.last_trend_gap < -0.01):
+                        asyncio.create_task(self.shadow_monitor(
+                            price, "CALL" if self.last_prob > 0.5 else "PUT"))
 
     async def shadow_monitor(self, entry_price, direction):
         entry_rsi = self.last_rsi
@@ -165,10 +168,14 @@ class ProductionEngine:
         exit_price = self.buffer['price'].iloc[-1]
         win = (exit_price > entry_price) if direction == "CALL" else (
             exit_price < entry_price)
+
         if win:
             self.shadow_wins += 1
         else:
             self.shadow_losses += 1
+            # Activate Cooldown on Shadow Loss
+            self.cooldown_until = time.time() + 300  # 5 Minute Cooldown
+            await self.send_telegram_msg("⚠️ *SHADOW LOSS:* Entering 5-min Cooldown.")
 
         # Post-Mortem Report for Shadow Trades
         status = "✅ SHADOW WIN" if win else "❌ SHADOW LOSS"
