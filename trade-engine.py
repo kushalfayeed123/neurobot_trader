@@ -139,13 +139,17 @@ class ProductionEngine:
 
         # 2. SHADOW MONITORING (The Learning Zone) - TIGHTENED
         else:
-            # Shadow CALL: Must have POSITIVE gap and RSI not too high
-            if 0.90 < self.last_prob < 0.98 and self.last_trend_gap > 0.005 and self.last_rsi < 60:
-                asyncio.create_task(self.shadow_monitor(price, "CALL"))
+            # TEMPORARY WIDE NET (Verification Only)
+            if 0.65 < self.last_prob < 0.98 or 0.02 < self.last_prob < 0.35:
+                if abs(self.last_trend_gap) > 0.001: # Very low gap requirement
+                    asyncio.create_task(self.shadow_monitor(price, "CALL" if self.last_prob > 0.5 else "PUT"))
+            # # Shadow CALL: Must have POSITIVE gap and RSI not too high
+            # if 0.90 < self.last_prob < 0.98 and self.last_trend_gap > 0.005 and self.last_rsi < 60:
+            #     asyncio.create_task(self.shadow_monitor(price, "CALL"))
 
-            # Shadow PUT: Must have NEGATIVE gap and RSI not too low
-            elif 0.02 < self.last_prob < 0.10 and self.last_trend_gap < -0.005 and self.last_rsi > 40:
-                asyncio.create_task(self.shadow_monitor(price, "PUT"))
+            # # Shadow PUT: Must have NEGATIVE gap and RSI not too low
+            # elif 0.02 < self.last_prob < 0.10 and self.last_trend_gap < -0.005 and self.last_rsi > 40:
+            #     asyncio.create_task(self.shadow_monitor(price, "PUT"))
 
     async def shadow_monitor(self, entry_price, direction):
         entry_rsi = self.last_rsi
