@@ -100,7 +100,7 @@ class ProductionEngine:
         self.last_tick_time = time.time()
 
         # 1. Check Cooldown
-        if time.time() < self.cooldown_until:
+        if time.time() < getattr(self, 'cooldown_until', 0):
             return
 
         price = msg['tick']['quote']
@@ -133,31 +133,59 @@ class ProductionEngine:
 
         self.last_prob = self.model.predict_proba(feat)[0][1]
 
-        # --- REFINED EXECUTION WITH RSI WALLS & COOLDOWN ---
+        # --- REFINED EXECUTION WITH DEBUGGER ---
         if not self.current_contract:
 
-            # CALL LOGIC (Must be within RSI 20-50 to avoid falling knives/overbought)
-            if 20 < self.last_rsi < 50:
-                if self.last_prob > 0.99 and self.last_trend_gap > 0.015:
-                    await self.place_trade(api, "CALL")
-                elif self.last_prob > 0.94 and self.last_trend_gap > 0.035:
-                    await self.place_trade(api, "CALL")
+            # Identify if the AI is seeing a strong signal
+            is_high_conf_call = self.last_prob > 0.94
+            is_high_conf_put = self.last_prob < 0.06
 
-            # PUT LOGIC (Must be within RSI 50-80 to avoid vertical rockets/oversold)
-            elif 50 < self.last_rsi < 80:
-                if self.last_prob < 0.01 and self.last_trend_gap < -0.015:
-                    await self.place_trade(api, "PUT")
-                elif self.last_prob < 0.06 and self.last_trend_gap < -0.035:
-                    await self.place_trade(api, "PUT")
+            block_reason = None
 
-            # SHADOW MONITOR (Stricter requirements)
-            else:
-                if (0.92 < self.last_prob < 0.98) or (0.02 < self.last_prob < 0.08):
-                    # Only shadow trade if Trend and AI are in perfect agreement
-                    if (self.last_prob > 0.5 and self.last_trend_gap > 0.01) or \
-                       (self.last_prob < 0.5 and self.last_trend_gap < -0.01):
-                        asyncio.create_task(self.shadow_monitor(
-                            price, "CALL" if self.last_prob > 0.5 else "PUT"))
+            # --- CALL ANALYSIS ---
+            if is_high_conf_call:
+                # Check RSI Wall
+                if not (20 < self.last_rsi < 50):
+                    block_reason = f"RSI {self.last_rsi:.1f} (Need 20-50)"
+                # Check Trend Gap (Tier 1 & 2)
+                elif not (self.last_prob > 0.99 and self.last_trend_gap > 0.015) and \
+                        not (self.last_prob > 0.94 and self.last_trend_gap > 0.035):
+                    block_reason = f"Gap {self.last_trend_gap:.4f}% (Trend too weak)"
+
+                if not block_reason:
+                    await self.place_trade(api, "CALL")
+                    return
+
+            # --- PUT ANALYSIS ---
+            elif is_high_conf_put:
+                # Check RSI Wall
+                if not (50 < self.last_rsi < 80):
+                    block_reason = f"RSI {self.last_rsi:.1f} (Need 50-80)"
+                # Check Trend Gap (Tier 1 & 2)
+                elif not (self.last_prob < 0.01 and self.last_trend_gap < -0.015) and \
+                        not (self.last_prob < 0.06 and self.last_trend_gap < -0.035):
+                    block_reason = f"Gap {self.last_trend_gap:.4f}% (Trend too weak)"
+
+                if not block_reason:
+                    await self.place_trade(api, "PUT")
+                    return
+
+            # --- DEBUG LOGGING ---
+            # If a high-confidence signal was blocked, notify Telegram every 15 mins
+            if block_reason:
+                now = time.time()
+                last_debug = getattr(self, 'last_debug_time', 0)
+                if now - last_debug > 900:  # 15 Minutes
+                    side = "CALL" if is_high_conf_call else "PUT"
+                    await self.send_telegram_msg(f"🛡️ *Sniper Blocked*\nSide: {side}\nAI: {self.last_prob:.1%}\nReason: {block_reason}")
+                    self.last_debug_time = now
+
+            # --- SHADOW MONITOR (Stricter requirements) ---
+            if (0.90 < self.last_prob < 0.98) or (0.02 < self.last_prob < 0.08):
+                if (self.last_prob > 0.5 and self.last_trend_gap > 0.01) or \
+                   (self.last_prob < 0.5 and self.last_trend_gap < -0.01):
+                    asyncio.create_task(self.shadow_monitor(
+                        price, "CALL" if self.last_prob > 0.5 else "PUT"))
 
     async def shadow_monitor(self, entry_price, direction):
         entry_rsi = self.last_rsi
