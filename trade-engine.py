@@ -148,31 +148,48 @@ class ProductionEngine:
         if len(self.price_list) < 30:
             return
 
-        # 2. NUMPY CALCULATIONS (Low Memory)
+        # --- 2. NUMPY CALCULATIONS (Aligned Shapes) ---
         prices = np.array(self.price_list)
+
+        # SMA Logic (Safe)
         sma_s = np.mean(prices[-5:])
         sma_l = np.mean(prices[-20:])
         self.last_trend_gap = ((sma_s / sma_l) - 1) * 100
 
-        # RSI Calc
-        deltas = np.diff(prices[-15:])
+        # RSI Logic (Aligned to 14 periods)
+        # We need 15 prices to get 14 differences
+        rsi_prices = prices[-15:]
+        deltas = np.diff(rsi_prices)
         up = np.mean(np.where(deltas > 0, deltas, 0))
         down = np.mean(np.where(deltas < 0, -deltas, 0))
-        self.last_rsi = 100 - (100 / (1 + (up/down))) if down != 0 else 100
-        v_prices = prices[-15:]
-        v_diffs = np.diff(v_prices)
-        v_returns = v_diffs / v_prices[:-1]
 
-        feat = pd.DataFrame([{
-            'returns': (prices[-1] / prices[-2]) - 1,
-            'volatility': np.std(v_returns),
-            'rsi': self.last_rsi,
-            'momentum': prices[-1] - prices[-10],
-            'sma_signal': 1 if sma_s > sma_l else 0
-        }]).fillna(0)
+        if down == 0:
+            self.last_rsi = 100
+        else:
+            rs = up / down
+            self.last_rsi = 100 - (100 / (1 + rs))
 
-        self.last_prob = self.model.predict_proba(feat)[0][1]
-        del feat
+        # --- 3. AI FEATURE ALIGNMENT (Fix for the ValueError) ---
+        # returns_slice must be (14,) to match expected volatility calculation
+        # np.diff(prices[-15:]) -> 14 values
+        # prices[-15:-1] -> 14 values
+        try:
+            returns_slice = np.diff(prices[-15:]) / prices[-15:-1]
+            volatility_val = np.std(returns_slice)
+
+            feat = pd.DataFrame([{
+                'returns': (prices[-1] / prices[-2]) - 1,
+                'volatility': volatility_val,
+                'rsi': self.last_rsi,
+                'momentum': prices[-1] - prices[-10],
+                'sma_signal': 1 if sma_s > sma_l else 0
+            }]).fillna(0)
+
+            self.last_prob = self.model.predict_proba(feat)[0][1]
+            del feat  # Immediate memory release
+        except Exception as e:
+            logging.error(f"Feature Calculation Error: {e}")
+            return  # Skip this tick if math fails
 
         # 4. EXECUTION
         if not self.current_contract:
