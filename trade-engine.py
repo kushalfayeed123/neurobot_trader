@@ -11,6 +11,7 @@ import time
 from flask import Flask
 from deriv_api import DerivAPI
 from dotenv import load_dotenv
+import json
 
 # --- WEB SERVER (For Deployment Health Checks) ---
 app = Flask(__name__)
@@ -55,7 +56,9 @@ class ProductionEngine:
         self.last_update_id = 0
         self.cooldown_until = 0
         self.is_shadow_active = False
-        self.max_drawdown = -5.00  # Stop bot if profit hits -$5.00
+        self.max_drawdown = -3.00  
+        self.stats_file = "trading_stats.json"
+        self.load_stats() # Load wins/losses on startup
 
     async def start(self):
         while True:
@@ -89,6 +92,34 @@ class ProductionEngine:
     def safe_handle_tick(self, msg, api):
         try:
             asyncio.create_task(self.handle_tick(msg, api))
+        except:
+            pass
+    
+    def load_stats(self):
+        """Load shadow stats from a local file."""
+        try:
+            if os.path.exists(self.stats_file):
+                with open(self.stats_file, 'r') as f:
+                    data = json.load(f)
+                    self.shadow_wins = data.get('shadow_wins', 0)
+                    self.shadow_losses = data.get('shadow_losses', 0)
+                    self.session_profit = data.get('session_profit', 0.0)
+            else:
+                self.shadow_wins = 0
+                self.shadow_losses = 0
+        except:
+            self.shadow_wins = 0
+            self.shadow_losses = 0
+
+    def save_stats(self):
+        """Save shadow stats to a local file."""
+        try:
+            with open(self.stats_file, 'w') as f:
+                json.dump({
+                    'shadow_wins': self.shadow_wins,
+                    'shadow_losses': self.shadow_losses,
+                    'session_profit': self.session_profit
+                }, f)
         except:
             pass
 
@@ -130,18 +161,20 @@ class ProductionEngine:
         }]).fillna(0)
         self.last_prob = self.model.predict_proba(feat)[0][1]
 
-        # 2. EXECUTION
+       
+            # --- ACTIVE SNIPER EXECUTION ---
         if not self.current_contract:
-            # LIVE TRADE (Balanced RSI 20-65)
+            # CALL ZONE: Lowered threshold to 0.90 to catch the wins in your logs
             if 20 < self.last_rsi < 65:
-                if (self.last_prob > 0.98 and self.last_trend_gap > 0.015) or \
-                   (self.last_prob > 0.94 and self.last_trend_gap > 0.035):
+                # We trade at 90% IF the Trend Gap is positive and moving
+                if self.last_prob > 0.90 and self.last_trend_gap > 0.005:
                     await self.place_trade(api, "CALL")
-                    return
+                    return 
 
+            # PUT ZONE: Lowered threshold to 0.10
             elif 35 < self.last_rsi < 80:
-                if (self.last_prob < 0.02 and self.last_trend_gap < -0.015) or \
-                   (self.last_prob < 0.06 and self.last_trend_gap < -0.035):
+                # We trade at 10% IF the Trend Gap is negative
+                if self.last_prob < 0.10 and self.last_trend_gap < -0.005:
                     await self.place_trade(api, "PUT")
                     return
 
@@ -169,7 +202,7 @@ class ProductionEngine:
             res_txt = "❌ SHADOW LOSS"
             self.cooldown_until = time.monotonic() + 300
             await self.send_telegram_msg("⚠️ *SHADOW LOSS:* 5-min Cooldown Active.")
-
+        self.save_stats()
         await self.send_telegram_msg(f"{res_txt}\nProb: `{e_prob:.2%}`\nGap: `{e_gap:.4f}%`\nRSI: `{e_rsi:.1f}`")
         self.is_shadow_active = False
 
@@ -212,10 +245,12 @@ class ProductionEngine:
                 if c.get('is_sold'):
                     profit = float(c.get('profit', 0))
                     self.session_profit += profit
+                    self.save_stats() # Save live profit updates
                     asyncio.create_task(self.send_telegram_msg(
                         f"🏁 *RESULT: {'WIN' if profit > 0 else 'LOSS'}*\nSession: `${self.session_profit:.2f}`"))
                     if not finished.done():
                         finished.set_result(True)
+
             sub = status_obs.subscribe(handle_update)
             await asyncio.wait_for(finished, timeout=60)
             sub.dispose()
