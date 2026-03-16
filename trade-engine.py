@@ -56,9 +56,10 @@ class ProductionEngine:
         self.last_update_id = 0
         self.cooldown_until = 0
         self.is_shadow_active = False
-        self.max_drawdown = -3.00  
+        self.max_drawdown = -3.00
         self.stats_file = "trading_stats.json"
-        self.load_stats() # Load wins/losses on startup
+        self.load_stats()  # Load wins/losses on startup
+        self.price_buffer = []  # Use a list instead of a DataFrame
 
     async def start(self):
         while True:
@@ -68,6 +69,15 @@ class ProductionEngine:
                 authorize = await api.authorize(self.token)
                 self.start_balance = float(authorize['authorize']['balance'])
                 logging.info(f"Connected. Balance: ${self.start_balance}")
+
+                portfolio = await api.portfolio()
+                active_contracts = portfolio.get(
+                    'portfolio', {}).get('contracts', [])
+                if active_contracts:
+                    self.current_contract = active_contracts[0]['contract_id']
+                    asyncio.create_task(self.monitor_contract(
+                        api, self.current_contract))
+                    logging.info("Recovered active trade.")
 
                 # DEFINED BACKGROUND TASKS
                 asyncio.create_task(self.periodic_status_report())
@@ -94,7 +104,7 @@ class ProductionEngine:
             asyncio.create_task(self.handle_tick(msg, api))
         except:
             pass
-    
+
     def load_stats(self):
         """Load shadow stats from a local file."""
         try:
@@ -134,14 +144,15 @@ class ProductionEngine:
 
         self.last_tick_time = time.time()
         price = msg['tick']['quote']
-        self.buffer = pd.concat([self.buffer, pd.DataFrame(
-            [{'price': price}])], ignore_index=True).tail(60)
+        self.price_buffer.append(price)
 
-        if len(self.buffer) < 30:
+        if len(self.price_buffer) > 60:
+            self.price_buffer.pop(0)  # Keep it capped at 60
+
+        if len(self.price_buffer) < 30:
             return
 
-        # Indicators
-        prices = self.buffer['price']
+        prices = pd.Series(self.price_buffer)
         sma_s = prices.rolling(5).mean().iloc[-1]
         sma_l = prices.rolling(20).mean().iloc[-1]
         self.last_trend_gap = ((sma_s / sma_l) - 1) * 100
@@ -149,27 +160,32 @@ class ProductionEngine:
         delta = prices.diff()
         gain = (delta.where(delta > 0, 0)).tail(14).mean()
         loss = (-delta.where(delta < 0, 0)).tail(14).mean()
-        self.last_rsi = 100 - (100 / (1 + (gain/loss))) if loss != 0 else 100
-
+        if loss == 0:
+            self.last_rsi = 100 if gain > 0 else 50
+        else:
+            self.last_rsi = 100 - (100 / (1 + (gain / loss)))
         # AI
+        returns = prices.pct_change().dropna()
+        volatility = returns.rolling(
+            14).std().iloc[-1] if len(returns) >= 14 else 0
+
         feat = pd.DataFrame([{
-            'returns': prices.pct_change().iloc[-1],
-            'volatility': prices.pct_change().rolling(14).std().iloc[-1],
+            'returns': returns.iloc[-1] if not returns.empty else 0,
+            'volatility': volatility,
             'rsi': self.last_rsi,
             'momentum': prices.iloc[-1] - prices.iloc[-10],
             'sma_signal': 1 if sma_s > sma_l else 0
         }]).fillna(0)
         self.last_prob = self.model.predict_proba(feat)[0][1]
 
-       
-            # --- ACTIVE SNIPER EXECUTION ---
+        # --- ACTIVE SNIPER EXECUTION ---
         if not self.current_contract:
             # CALL ZONE: Lowered threshold to 0.90 to catch the wins in your logs
             if 20 < self.last_rsi < 65:
                 # We trade at 90% IF the Trend Gap is positive and moving
                 if self.last_prob > 0.90 and self.last_trend_gap > 0.005:
                     await self.place_trade(api, "CALL")
-                    return 
+                    return
 
             # PUT ZONE: Lowered threshold to 0.10
             elif 35 < self.last_rsi < 80:
@@ -190,7 +206,7 @@ class ProductionEngine:
         self.is_shadow_active = True
         e_rsi, e_gap, e_prob = self.last_rsi, self.last_trend_gap, self.last_prob
         await asyncio.sleep(12)
-        exit_p = self.buffer['price'].iloc[-1]
+        exit_p = self.price_buffer[-1]
         win = (exit_p > entry_price) if side == "CALL" else (
             exit_p < entry_price)
 
@@ -245,7 +261,7 @@ class ProductionEngine:
                 if c.get('is_sold'):
                     profit = float(c.get('profit', 0))
                     self.session_profit += profit
-                    self.save_stats() # Save live profit updates
+                    self.save_stats()  # Save live profit updates
                     asyncio.create_task(self.send_telegram_msg(
                         f"🏁 *RESULT: {'WIN' if profit > 0 else 'LOSS'}*\nSession: `${self.session_profit:.2f}`"))
                     if not finished.done():
