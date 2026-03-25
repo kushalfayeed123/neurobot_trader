@@ -178,19 +178,18 @@ class ProductionEngine:
         }]).fillna(0)
         self.last_prob = self.model.predict_proba(feat)[0][1]
 
-        # --- ACTIVE SNIPER EXECUTION ---
+        
+        # --- ACTIVE SNIPER EXECUTION (Optimized for Activity) ---
         if not self.current_contract:
-            # CALL ZONE: Lowered threshold to 0.90 to catch the wins in your logs
-            if 20 < self.last_rsi < 65:
-                # We trade at 90% IF the Trend Gap is positive and moving
-                if self.last_prob > 0.90 and self.last_trend_gap > 0.005:
+            # CALL ZONE: Loosened Gap to 0.0025, but added RSI floor of 30
+            if 30 < self.last_rsi < 65:
+                if self.last_prob > 0.90 and self.last_trend_gap > 0.0025:
                     await self.place_trade(api, "CALL")
                     return
 
-            # PUT ZONE: Lowered threshold to 0.10
-            elif 35 < self.last_rsi < 80:
-                # We trade at 10% IF the Trend Gap is negative
-                if self.last_prob < 0.10 and self.last_trend_gap < -0.005:
+            # PUT ZONE: Loosened Gap to -0.0025, but added RSI ceiling of 70
+            elif 35 < self.last_rsi < 70:
+                if self.last_prob < 0.10 and self.last_trend_gap < -0.0025:
                     await self.place_trade(api, "PUT")
                     return
 
